@@ -1,8 +1,36 @@
 import xmlrpc.server
 import sqlite3
 import os
+import time
 
 DB_FILE = "master_metadata.db"
+
+# --- NEW: Live Node Tracker ---
+# Dictionary to store { '127.0.0.1:5001': 1678888999.0 }
+live_nodes = {}
+HEARTBEAT_TIMEOUT = 6.0 # If we don't hear from a node in 6 seconds, it's dead.
+
+def receive_heartbeat(node_address):
+    """Catches the ping from the Data Nodes and updates their timestamp."""
+    live_nodes[node_address] = time.time()
+    # (Optional) You can comment out the print statement below so your terminal doesn't get flooded!
+    # print(f"💓 Heartbeat received from {node_address}") 
+    return True
+
+def get_active_nodes():
+    """Called by the Client to find out which nodes are currently alive."""
+    current_time = time.time()
+    active = []
+    
+    for node, last_ping in list(live_nodes.items()):
+        if current_time - last_ping <= HEARTBEAT_TIMEOUT:
+            active.append(node)
+        else:
+            # Node has timed out / died!
+            print(f"[WARNING] Data Node {node} is DEAD.")
+            del live_nodes[node]
+            
+    return active
 
 def init_db():
     """Initializes the SQLite database to store metadata."""
@@ -83,8 +111,11 @@ def start_master():
     server.register_function(get_file_directory, "get_file_directory")
     server.register_function(get_chunk_locations, "get_chunk_locations")
     
-    # ---> NEW: Register the heartbeat function <---
+    # Register the heartbeat function
     server.register_function(receive_heartbeat, "receive_heartbeat")
+    
+    # ---> NEW: Register the active nodes tracking function <---
+    server.register_function(get_active_nodes, "get_active_nodes")
     
     print("🧠 Master Node is running on port 5000...")
     print("Waiting for connections from Clients or Data Nodes...")

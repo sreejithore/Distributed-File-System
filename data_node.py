@@ -3,10 +3,17 @@ import xmlrpc.client
 import os
 import threading
 import time
+import sys # <-- NEW IMPORT
 
-# Node Configuration
+# --- NODE CONFIGURATION ---
 NODE_IP = "127.0.0.1"
-NODE_PORT = 5001  # We will use 5001 for Node A, 5002 for Node B, etc.
+
+# Allow passing port via terminal, default to 5001 if none provided
+if len(sys.argv) > 1:
+    NODE_PORT = int(sys.argv[1])
+else:
+    NODE_PORT = 5001  
+
 MASTER_URL = "http://127.0.0.1:5000"
 STORAGE_DIR = f"./storage_node_{NODE_PORT}"
 
