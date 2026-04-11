@@ -50,29 +50,47 @@ with col1:
                 file_bytes = uploaded_file.getvalue()
                 
                 st.write(f"2. Splitting '{uploaded_file.name}' into 2MB chunks...")
-                # Get the list of chunks and their raw data
                 chunks = split_file(file_bytes, uploaded_file.name)
                 
-                st.write("3. Contacting Master for metadata registration...")
+                # Connect to Master
                 master_url = f"http://{st.session_state.get('master_ip', '127.0.0.1')}:{st.session_state.get('master_port', '5000')}"
                 master_conn = xmlrpc.client.ServerProxy(master_url)
                 
-                # Prepare the data for the Master (Note: we use the 5001 Data Node port here)
-                metadata = [{'chunk_name': c['chunk_name'], 'node_ip': '127.0.0.1:5001'} for c in chunks]
+                st.write("3. Asking Master for active Data Nodes...")
+                active_nodes = master_conn.get_active_nodes()
+                
+                # Safety check: Prevent upload if the whole cluster is down!
+                if not active_nodes:
+                    status.update(label="Upload Failed!", state="error", expanded=False)
+                    st.error("No active Data Nodes found. Is your cluster running?")
+                    st.stop() # Stops the script from continuing
+                
+                st.write(f"   -> Found {len(active_nodes)} live nodes: {active_nodes}")
+                
+                st.write("4. Assigning chunks (Load Balancing)...")
+                metadata = []
+                # Distribute chunks evenly using the modulo operator (Round-Robin)
+                for index, chunk in enumerate(chunks):
+                    # If you have 2 nodes, index 0 goes to Node A, index 1 to Node B, index 2 to Node A...
+                    target_node = active_nodes[index % len(active_nodes)]
+                    
+                    metadata.append({'chunk_name': chunk['chunk_name'], 'node_ip': target_node})
+                    chunk['assigned_node'] = target_node # Save the target for the next step
+                
+                st.write("5. Registering map with Master Database...")
                 master_conn.register_file_chunks(uploaded_file.name, metadata)
                 
-                st.write(f"4. Sending {len(chunks)} chunks to Data Node...")
-                # Connect directly to the Data Node
-                data_node_conn = xmlrpc.client.ServerProxy("http://127.0.0.1:5001")
-                
+                st.write("6. Transferring data directly to Worker Nodes...")
                 for chunk in chunks:
-                    # Wrap the raw bytes in xmlrpc.client.Binary for safe network travel
+                    target_node = chunk['assigned_node']
+                    node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
+                    
+                    # Wrap and send
                     binary_wrapper = xmlrpc.client.Binary(chunk['raw_bytes'])
-                    # Send it over the network to the Data Node!
-                    data_node_conn.store_chunk(chunk['chunk_name'], binary_wrapper)
+                    node_conn.store_chunk(chunk['chunk_name'], binary_wrapper)
                 
                 status.update(label="Upload Complete!", state="complete", expanded=False)
-                st.success(f"{uploaded_file.name} successfully chunked and stored across the network!")
+                st.success(f"{uploaded_file.name} successfully distributed across the cluster!")
                 
 with col2:
     st.subheader("Files in DFS")
