@@ -4,32 +4,27 @@ CHUNK_SIZE = 2 * 1024 * 1024  # 2MB chunks
 
 def split_file(file_bytes, filename):
     """
-    Simulates splitting a file into chunks and saving them locally.
+    Splits a file into chunks in memory to be sent over the network.
     """
-    chunk_paths = []
+    chunk_data_list = []
     total_size = len(file_bytes)
-    
-    # --- NEW CODE: Create the directory if it doesn't exist ---
-    if not os.path.exists("temp_chunks"):
-        os.makedirs("temp_chunks")
-    # ----------------------------------------------------------
     
     num_chunks = (total_size // CHUNK_SIZE) + (1 if total_size % CHUNK_SIZE > 0 else 0)
     
     for i in range(num_chunks):
         start = i * CHUNK_SIZE
         end = min((i + 1) * CHUNK_SIZE, total_size)
-        chunk_data = file_bytes[start:end]
         
+        chunk_bytes = file_bytes[start:end]
         chunk_name = f"{filename}_part{i+1}"
-        chunk_path = f"temp_chunks/{chunk_name}"
         
-        with open(chunk_path, 'wb') as f:
-            f.write(chunk_data)
-        
-        chunk_paths.append(chunk_name)
+        # Instead of saving to disk, we add the raw bytes to our list
+        chunk_data_list.append({
+            "chunk_name": chunk_name,
+            "raw_bytes": chunk_bytes
+        })
     
-    return chunk_paths
+    return chunk_data_list
 
 def stitch_file(filename, chunk_names, output_dir="."):
     """
