@@ -13,8 +13,7 @@ HEARTBEAT_TIMEOUT = 6.0 # If we don't hear from a node in 6 seconds, it's dead.
 def receive_heartbeat(node_address):
     """Catches the ping from the Data Nodes and updates their timestamp."""
     live_nodes[node_address] = time.time()
-    # (Optional) You can comment out the print statement below so your terminal doesn't get flooded!
-    # print(f"💓 Heartbeat received from {node_address}") 
+    print(f"💓 Heartbeat received from {node_address}") 
     return True
 
 def get_active_nodes():
@@ -93,11 +92,6 @@ def get_chunk_locations(filename):
     conn.close()
     return locations
 
-def receive_heartbeat(node_address):
-    """Catches the ping from the Data Nodes."""
-    print(f"💓 Heartbeat received from Data Node at {node_address}")
-    return True
-
 # --- SERVER STARTUP ---
 def start_master():
     init_db()
@@ -114,7 +108,7 @@ def start_master():
     # Register the heartbeat function
     server.register_function(receive_heartbeat, "receive_heartbeat")
     
-    # ---> NEW: Register the active nodes tracking function <---
+    # Register the active nodes tracking function
     server.register_function(get_active_nodes, "get_active_nodes")
     
     print("🧠 Master Node is running on port 5000...")

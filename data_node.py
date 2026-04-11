@@ -49,7 +49,7 @@ def get_chunk(chunk_name):
         return None
 
 # --- HEARTBEAT MECHANISM ---
-
+'''
 def send_heartbeat():
     """Runs in the background and pings the Master every 2 seconds."""
     while True:
@@ -60,6 +60,18 @@ def send_heartbeat():
         except Exception:
             # If the Master is offline, silently fail and try again in 2 seconds
             pass
+        time.sleep(2)
+'''
+
+def send_heartbeat():
+    """Runs in the background and pings the Master every 2 seconds."""
+    while True:
+        try:
+            master = xmlrpc.client.ServerProxy(MASTER_URL)
+            master.receive_heartbeat(f"{NODE_IP}:{NODE_PORT}")
+        except Exception as e:
+            # ---> CHANGED: Force it to print the error instead of 'pass' <---
+            print(f"⚠️ [ERROR] Heartbeat failed to reach Master: {e}") 
         time.sleep(2)
 
 # --- SERVER STARTUP ---
