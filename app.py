@@ -114,17 +114,17 @@ with col2:
             # Fetch the live directory from the Master's SQLite database
             live_registry = master_conn.get_file_directory()
             
-            # Display the files with Download buttons
+            # Display the files with Download and Delete buttons
             if live_registry:
                 for filename, status in live_registry.items():
                     
-                    # Create a mini-grid: 3 parts for the text, 1 part for the button
-                    text_col, button_col = st.columns([3, 1])
+                    # Create a mini-grid: 3 parts text, 1 part Download, 1 part Delete
+                    text_col, dl_col, del_col = st.columns([3, 1, 1])
                     
                     with text_col:
                         st.markdown(f"**📄 {filename}** ({status})")
                     
-                    with button_col:
+                    with dl_col:
                         if st.button("Download", key=f"dl_btn_{filename}"):
                             with st.spinner(f"Fetching chunks for {filename}..."):
                                 import os
@@ -173,6 +173,36 @@ with col2:
                                     st.success(f"Successfully downloaded to: {save_path}")
                                 except Exception as e:
                                     st.error(f"Download failed: {e}")
+
+                    with del_col:
+                        # Use type="primary" to make the Delete button stand out (red)
+                        if st.button("Delete", type="primary", key=f"del_btn_{filename}"):
+                            with st.spinner("Purging file from cluster..."):
+                                try:
+                                    # 1. Ask Master where ALL copies of the chunks live
+                                    chunk_locations = master_conn.get_chunk_locations(filename)
+                                    
+                                    # 2. Tell every Data Node holding a piece to physically delete it
+                                    for chunk_name, node_ip in chunk_locations:
+                                        try:
+                                            node_conn = xmlrpc.client.ServerProxy(f"http://{node_ip}")
+                                            node_conn.delete_chunk(chunk_name)
+                                        except Exception:
+                                            # If a node is currently offline, we just skip it for now
+                                            print(f"⚠️ Could not reach {node_ip} to delete {chunk_name}")
+                                            
+                                    # 3. Wipe the memory from the Master's database
+                                    success = master_conn.delete_file_metadata(filename)
+                                    
+                                    if success:
+                                        st.success("File completely purged!")
+                                        import time
+                                        time.sleep(1) # Pause so the user sees the success message
+                                        st.rerun() # Instantly refresh UI so it disappears from the list
+                                    else:
+                                        st.error("Failed to delete metadata from Master.")
+                                except Exception as e:
+                                    st.error(f"Deletion error: {e}")
             else:
                 st.info("ℹ️ No files currently in the system.")
                 
