@@ -1,7 +1,9 @@
 import xmlrpc.server
+import xmlrpc.client  # <-- NEW: Allows Master to make outgoing requests
 import sqlite3
 import os
 import time
+import threading      # <-- NEW: Allows the balancer to run in the background
 
 DB_FILE = "master_metadata.db"
 
@@ -107,6 +109,71 @@ def get_chunk_locations(filename):
     conn.close()
     return locations
 
+# --- BACKGROUND REBALANCER ---
+def replication_monitor():
+    """Runs continuously to ensure all chunks meet the Replication Factor."""
+    REPLICATION_FACTOR = 2
+    
+    while True:
+        time.sleep(10) # Check the system every 10 seconds
+        
+        active_nodes = get_active_nodes()
+        
+        # If we don't have at least 2 nodes online, we can't replicate anyway
+        if len(active_nodes) < REPLICATION_FACTOR:
+            continue
+            
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            
+            # Fetch every chunk in the database
+            cursor.execute("SELECT filename, chunk_name, node_ip FROM file_chunks")
+            all_chunks = cursor.fetchall()
+            
+            # Group them to see how many copies exist: { 'part_1': {'filename': 'file.txt', 'nodes': ['127.0.0.1:5001']} }
+            chunk_map = {}
+            for filename, chunk_name, node_ip in all_chunks:
+                if chunk_name not in chunk_map:
+                    chunk_map[chunk_name] = {'filename': filename, 'nodes': []}
+                chunk_map[chunk_name]['nodes'].append(node_ip)
+                
+            # Check every chunk for missing backups
+            for chunk_name, data in chunk_map.items():
+                current_nodes = data['nodes']
+                
+                if len(current_nodes) < REPLICATION_FACTOR:
+                    # UNDER-REPLICATED! We need to fix this.
+                    # 1. Find an active node that HAS the chunk
+                    source_node = next((n for n in current_nodes if n in active_nodes), None)
+                    
+                    # 2. Find an active node that DOES NOT have the chunk
+                    target_node = next((n for n in active_nodes if n not in current_nodes), None)
+                    
+                    if source_node and target_node:
+                        print(f"🔄 [BALANCER] Fixing {chunk_name}: Copying from {source_node[-4:]} to {target_node[-4:]}...")
+                        
+                        try:
+                            # Fetch from Source
+                            source_conn = xmlrpc.client.ServerProxy(f"http://{source_node}")
+                            chunk_data = source_conn.get_chunk(chunk_name)
+                            
+                            # Push to Target
+                            target_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
+                            target_conn.store_chunk(chunk_name, chunk_data)
+                            
+                            # Update the Database
+                            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip) VALUES (?, ?, ?)",
+                                           (data['filename'], chunk_name, target_node))
+                            conn.commit()
+                            print(f"✅ [BALANCER] Successfully replicated {chunk_name} to backup node!")
+                        except Exception as e:
+                            print(f"⚠️ [BALANCER] Failed to transfer {chunk_name}: {e}")
+                            
+            conn.close()
+        except Exception as e:
+            print(f"[ERROR] Balancer crashed: {e}")
+
 # --- SERVER STARTUP ---
 def start_master():
     init_db()
@@ -131,6 +198,8 @@ def start_master():
     
     print("🧠 Master Node is running on port 5000...")
     print("Waiting for connections from Clients or Data Nodes...")
+    # ---> NEW: Start the background replication monitor <---
+    threading.Thread(target=replication_monitor, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
