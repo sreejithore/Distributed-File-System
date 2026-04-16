@@ -46,21 +46,26 @@ Open **four separate terminal windows** and run the following commands in order:
 
 (Wait for the "Master Node is running on port 5000" message)
 
-Terminal 2 (Data Node A):
-
-python data_node.py 5001
+* **Terminal 2 (Data Node A):**
+```bash
+  python data_node.py 5001
+```
 (This will automatically create a storage_node_5001 folder)
 
-Terminal 3 (Data Node B):
-
+* **Terminal 3 (Data Node B):**
+```bash
 python data_node.py 5002
+```
 (This will automatically create a storage_node_5002 folder)
 
-Terminal 4 (The Streamlit Client):
-
+* **Terminal 4 (The Streamlit Client):**
+```bash
 streamlit run app.py
+```
 
-2. Interact via the GUI
+---
+
+### 2. Interact via the GUI
 Open the URL provided by Streamlit (usually http://localhost:8501).
 
 Enter the Master Node IP (127.0.0.1) and Port (5000) in the sidebar and click Connect.
