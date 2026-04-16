@@ -61,7 +61,7 @@ with col1:
                 # Safety check: Prevent upload if the whole cluster is down!
                 if not active_nodes:
                     status.update(label="Upload Failed!", state="error", expanded=False)
-                    st.error("No active Data Nodes found. Is your cluster running?")
+                    st.error("⚠️ Both Data Nodes are currently unavailable. Please wait and try again after some time.")
                     st.stop() # Stops the script from continuing
                 
                 st.write(f"   -> Found {len(active_nodes)} live nodes: {active_nodes}")
@@ -126,53 +126,60 @@ with col2:
                     
                     with dl_col:
                         if st.button("Download", key=f"dl_btn_{filename}"):
-                            with st.spinner(f"Fetching chunks for {filename}..."):
-                                import os
-                                
-                                # Ask Master where the chunks are
-                                chunk_locations = master_conn.get_chunk_locations(filename)
-                                
-                                # Ensure we have a unique list of chunk names to loop through
-                                chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
-                                
-                                # Create a downloads folder if it doesn't exist
-                                if not os.path.exists("downloads"):
-                                    os.makedirs("downloads")
-                                
-                                save_path = f"downloads/recovered_{filename}"
-                                
-                                # 2. Download from Data Nodes and stitch together
-                                try:
-                                    # Group the locations by chunk name so we know our backups
-                                    # Example: {'part1': ['127.0.0.1:5001', '127.0.0.1:5002']}
-                                    chunk_map = {}
-                                    for c_name, n_ip in chunk_locations:
-                                        if c_name not in chunk_map:
-                                            chunk_map[c_name] = []
-                                        chunk_map[c_name].append(n_ip)
-                                        
-                                    with open(save_path, 'wb') as outfile:
-                                        for chunk_name in chunk_names:
-                                            chunk_recovered = False
+                            
+                            # ---> NEW: Check if the cluster is alive BEFORE trying to download <---
+                            active_nodes = master_conn.get_active_nodes()
+                            
+                            if not active_nodes:
+                                st.error("⚠️ Both Data Nodes are currently unavailable. Please wait and try again after some time.")
+                            else:
+                                with st.spinner(f"Fetching chunks for {filename}..."):
+                                    import os
+                                    
+                                    # Ask Master where the chunks are
+                                    chunk_locations = master_conn.get_chunk_locations(filename)
+                                    
+                                    # Ensure we have a unique list of chunk names to loop through
+                                    chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
+                                    
+                                    # Create a downloads folder if it doesn't exist
+                                    if not os.path.exists("downloads"):
+                                        os.makedirs("downloads")
+                                    
+                                    save_path = f"downloads/recovered_{filename}"
+                                    
+                                    # Download from Data Nodes and stitch together
+                                    try:
+                                        # Group the locations by chunk name so we know our backups
+                                        # Example: {'part1': ['127.0.0.1:5001', '127.0.0.1:5002']}
+                                        chunk_map = {}
+                                        for c_name, n_ip in chunk_locations:
+                                            if c_name not in chunk_map:
+                                                chunk_map[c_name] = []
+                                            chunk_map[c_name].append(n_ip)
                                             
-                                            # Try each node that holds this chunk until one works
-                                            for target_node in chunk_map.get(chunk_name, []):
-                                                try:
-                                                    node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
-                                                    chunk_data = node_conn.get_chunk(chunk_name)
-                                                    
-                                                    outfile.write(chunk_data.data)
-                                                    chunk_recovered = True
-                                                    break # Success! Stop trying backups for this chunk.
-                                                except Exception:
-                                                    print(f"[WARNING] Node {target_node} is down. Trying backup...")
-                                            
-                                            if not chunk_recovered:
-                                                raise Exception(f"All nodes holding {chunk_name} are completely offline!")
-                                            
-                                    st.success(f"Successfully downloaded to: {save_path}")
-                                except Exception as e:
-                                    st.error(f"Download failed: {e}")
+                                        with open(save_path, 'wb') as outfile:
+                                            for chunk_name in chunk_names:
+                                                chunk_recovered = False
+                                                
+                                                # Try each node that holds this chunk until one works
+                                                for target_node in chunk_map.get(chunk_name, []):
+                                                    try:
+                                                        node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
+                                                        chunk_data = node_conn.get_chunk(chunk_name)
+                                                        
+                                                        outfile.write(chunk_data.data)
+                                                        chunk_recovered = True
+                                                        break # Success! Stop trying backups for this chunk.
+                                                    except Exception:
+                                                        print(f"[WARNING] Node {target_node} is down. Trying backup...")
+                                                
+                                                if not chunk_recovered:
+                                                    raise Exception(f"All nodes holding {chunk_name} are completely offline!")
+                                                
+                                        st.success(f"Successfully downloaded to: {save_path}")
+                                    except Exception as e:
+                                        st.error(f"Download failed: {e}")
 
                     with del_col:
                         # Use type="primary" to make the Delete button stand out (red)
