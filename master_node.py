@@ -51,6 +51,37 @@ def init_db():
 
 # --- RPC EXPOSED FUNCTIONS ---
 
+def get_cluster_stats():
+    """Calculates and returns live analytics about the cluster's storage."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        
+        # 1. Get total number of unique files
+        cursor.execute("SELECT COUNT(DISTINCT filename) FROM file_chunks")
+        total_files = cursor.fetchone()[0]
+        
+        # 2. Get chunk distribution per node
+        cursor.execute("SELECT node_ip, COUNT(chunk_name) FROM file_chunks GROUP BY node_ip")
+        node_chunks = cursor.fetchall()
+        conn.close()
+        
+        # 3. Calculate storage (Each chunk is strictly 2MB)
+        node_storage = {}
+        for ip, count in node_chunks:
+            # Format the IP nicely (e.g., "Node 5001")
+            node_name = f"Node {ip.split(':')[-1]}"
+            node_storage[node_name] = count * 2  # Multiply by 2MB
+            
+        return {
+            "total_files": total_files,
+            "node_storage_mb": node_storage,
+            "replication_factor": 2
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch cluster stats: {e}")
+        return {"total_files": 0, "node_storage_mb": {}, "replication_factor": 2}
+
 def delete_file_metadata(filename):
     """Deletes the file's chunk map from the Master's database."""
     try:
@@ -168,6 +199,7 @@ def start_master():
     server_address = ('0.0.0.0', 5000)
     server = xmlrpc.server.SimpleXMLRPCServer(server_address, allow_none=True)
     
+    server.register_function(get_cluster_stats, "get_cluster_stats")
     server.register_function(register_file_chunks, "register_file_chunks")
     server.register_function(get_file_directory, "get_file_directory")
     server.register_function(get_chunk_locations, "get_chunk_locations")
