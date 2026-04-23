@@ -24,7 +24,8 @@ with st.sidebar:
         st.session_state['connected'] = True
         st.session_state['master_ip'] = master_ip
         st.session_state['master_port'] = master_port
-        st.success(f"Connected to Master at {master_ip}:{master_port}!")
+        # ---> NEW: Toast notification for connection
+        st.toast(f"✅ Connected to Master at {master_ip}:{master_port}!")
     
     if st.session_state.get('connected', False):
         st.success("🟢 System Status: ONLINE")
@@ -121,7 +122,8 @@ with col1:
                 
                 if not active_nodes:
                     status.update(label="Upload Failed!", state="error", expanded=False)
-                    st.error("⚠️ Both Data Nodes are currently unavailable. Please wait and try again after some time.")
+                    # ---> NEW: Toast error
+                    st.toast("⚠️ Both Data Nodes are currently unavailable.", icon="🚨")
                     st.stop()
                 
                 st.write(f"   -> Found {len(active_nodes)} live nodes: {active_nodes}")
@@ -154,7 +156,8 @@ with col1:
                             binary_wrapper = xmlrpc.client.Binary(chunk['raw_bytes'])
                             node_conn.store_chunk(chunk['chunk_name'], binary_wrapper)
                         except Exception as e:
-                            st.warning(f"Failed to send {chunk['chunk_name']} to {target_node}")
+                            # ---> NEW: Toast warning for specific chunk failure
+                            st.toast(f"⚠️ Failed to send {chunk['chunk_name']} to {target_node}")
                 
                 status.update(label="Upload Complete!", state="complete", expanded=False)
                 st.toast(f"✅ {uploaded_file.name} successfully replicated!")
@@ -172,15 +175,12 @@ with col2:
             if live_registry:
                 for filename, status in live_registry.items():
                     
-                    # ---> NEW: 4-Column Layout to fit the Preview button
                     text_col, prev_col, dl_col, del_col = st.columns([3, 1, 1, 1])
                     
                     with text_col:
                         st.markdown(f"**📄 {filename}** ({status})")
                         
-                    # ---> NEW: In-Memory Image Preview Logic
                     with prev_col:
-                        # Smart check to disable button if the file is not an image
                         is_image = filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
                         preview_clicked = st.button("Preview", key=f"prev_btn_{filename}", disabled=not is_image)
                     
@@ -188,7 +188,8 @@ with col2:
                         if st.button("Download", key=f"dl_btn_{filename}"):
                             active_nodes = master_conn.get_active_nodes()
                             if not active_nodes:
-                                st.error("⚠️ Both Data Nodes are currently unavailable.")
+                                # ---> NEW: Toast error
+                                st.toast("⚠️ Both Data Nodes are unavailable.", icon="🚨")
                             else:
                                 with st.spinner(f"Fetching chunks for {filename}..."):
                                     chunk_locations = master_conn.get_chunk_locations(filename)
@@ -222,7 +223,7 @@ with col2:
                                                             chunk_recovered = True
                                                             break
                                                         else:
-                                                            st.warning(f"⚠️ CORRUPTION DETECTED on {target_node}!")
+                                                            st.toast(f"⚠️ CORRUPTION DETECTED on {target_node}!", icon="🚨")
                                                     except Exception:
                                                         pass
                                                 
@@ -231,7 +232,8 @@ with col2:
                                                 
                                         st.toast(f"✅ Successfully downloaded {filename}!")
                                     except Exception as e:
-                                        st.error(f"Download failed: {e}")
+                                        # ---> NEW: Toast error
+                                        st.toast(f"❌ Download failed: {e}")
 
                     with del_col:
                         if st.button("Delete", type="primary", key=f"del_btn_{filename}"):
@@ -251,15 +253,17 @@ with col2:
                                         time.sleep(1) 
                                         st.rerun() 
                                     else:
-                                        st.error("Failed to delete metadata.")
+                                        # ---> NEW: Toast error
+                                        st.toast("❌ Failed to delete metadata.")
                                 except Exception as e:
-                                    st.error(f"Deletion error: {e}")
+                                    # ---> NEW: Toast error
+                                    st.toast(f"❌ Deletion error: {e}")
                                     
-                    # ---> RENDERING THE PREVIEW (Displays underneath the file entry if clicked)
                     if preview_clicked:
                         active_nodes = master_conn.get_active_nodes()
                         if not active_nodes:
-                            st.error("⚠️ Cluster Offline.")
+                            # ---> NEW: Toast error
+                            st.toast("⚠️ Cluster Offline.", icon="🚨")
                         else:
                             with st.spinner("Fetching chunks from RAM..."):
                                 try:
@@ -271,7 +275,6 @@ with col2:
                                             chunk_map[c_name] = {'nodes': [], 'hash': c_hash}
                                         chunk_map[c_name]['nodes'].append(n_ip)
                                         
-                                    # Use a bytearray to act as an in-memory canvas
                                     file_bytes = bytearray()
                                     
                                     for chunk_name in chunk_names:
@@ -284,7 +287,7 @@ with col2:
                                                 chunk_data = node_conn.get_chunk(chunk_name)
                                                 downloaded_hash = hashlib.sha256(chunk_data.data).hexdigest()
                                                 if downloaded_hash == expected_hash:
-                                                    file_bytes.extend(chunk_data.data) # Append bytes into memory
+                                                    file_bytes.extend(chunk_data.data) 
                                                     chunk_recovered = True
                                                     break
                                             except Exception:
@@ -293,12 +296,12 @@ with col2:
                                         if not chunk_recovered:
                                             raise Exception("Missing or corrupt chunks prevented preview.")
                                     
-                                    # Pass the compiled bytes directly into Streamlit's image renderer
                                     st.image(file_bytes, caption=f"Live Preview: {filename}", use_container_width=True)
                                 except Exception as e:
-                                    st.error(f"Preview failed: {e}")
+                                    # ---> NEW: Toast error
+                                    st.toast(f"❌ Preview failed: {e}")
                     
-                    st.divider() # Adds a clean line below each file and its preview
+                    st.divider() 
                                     
             else:
                 st.info("ℹ️ No files currently in the system.")
