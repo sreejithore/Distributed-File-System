@@ -1,7 +1,7 @@
 import streamlit as st
 import time
 import os
-import hashlib  
+import hashlib
 import xmlrpc.client
 from client_logic import split_file, stitch_file
 
@@ -9,7 +9,6 @@ from client_logic import split_file, stitch_file
 if 'connected' not in st.session_state:
     st.session_state['connected'] = False
 if 'file_registry' not in st.session_state:
-    # Mocking the Master Node's database
     st.session_state['file_registry'] = {} 
 
 st.set_page_config(page_title="DFS Client Gateway", layout="wide")
@@ -18,17 +17,13 @@ st.title("Distributed File System Dashboard")
 # --- 1. SIDEBAR: System Control & Status ---
 with st.sidebar:
     st.header("System Connection")
-    # Input boxes for the IP and Port of your Master Node
     master_ip = st.text_input("Master Node IP", "127.0.0.1")
     master_port = st.text_input("Port", "5000")
     
-    # A button to establish the initial connection
     if st.button("Connect"):
         st.session_state['connected'] = True
-        # Save the typed IP and Port into session state so the upload logic can use them later
         st.session_state['master_ip'] = master_ip
         st.session_state['master_port'] = master_port
-        
         st.success(f"Connected to Master at {master_ip}:{master_port}!")
     
     if st.session_state.get('connected', False):
@@ -42,14 +37,11 @@ def display_cluster_health():
     st.markdown("---")
     st.subheader("🖥️ Live Cluster Health & Analytics")
     
-    # Only check the health if the user has clicked "Connect" in the sidebar
     if st.session_state.get('connected', False):
         try:
-            # Re-establish connection to the Master
             master_url = f"http://{st.session_state.get('master_ip', '127.0.0.1')}:{st.session_state.get('master_port', '5000')}"
             master_conn = xmlrpc.client.ServerProxy(master_url)
             
-            # Ask the Master who is currently alive AND fetch the new stats
             active_nodes = master_conn.get_active_nodes()
             cluster_stats = master_conn.get_cluster_stats()
             
@@ -75,8 +67,6 @@ def display_cluster_health():
             total_files = cluster_stats.get("total_files", 0)
             rep_factor = cluster_stats.get("replication_factor", 2)
             node_storage = cluster_stats.get("node_storage_mb", {})
-            
-            # Simulate a network capacity (e.g., 500MB per active node)
             network_capacity = len(active_nodes) * 500
             
             with metric_col1:
@@ -90,15 +80,11 @@ def display_cluster_health():
             if node_storage:
                 st.markdown("**Data Distribution Across Nodes (MB)**")
                 import pandas as pd
-                
-                # Format the data for Streamlit's bar chart
                 chart_data = pd.DataFrame(
                     list(node_storage.values()), 
                     index=list(node_storage.keys()), 
                     columns=["Storage Used (MB)"]
                 )
-                
-                # Display the bar chart
                 st.bar_chart(chart_data, height=200)
             else:
                 st.info("ℹ️ No data is currently stored in the cluster.")
@@ -111,13 +97,11 @@ def display_cluster_health():
     st.markdown("---")
 
 display_cluster_health()
-# --------------------------------
 
 # --- 2. MAIN DASHBOARD: User Actions ---
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Upload a File")
-    # Use st.file_uploader()
     uploaded_file = st.file_uploader("Choose a file to upload to DFS")
 
     if uploaded_file is not None and st.session_state.get('connected', False):
@@ -129,43 +113,35 @@ with col1:
                 st.write(f"2. Splitting '{uploaded_file.name}' into chunks...")
                 chunks = split_file(file_bytes, uploaded_file.name)
                 
-                # Connect to Master
                 master_url = f"http://{st.session_state.get('master_ip', '127.0.0.1')}:{st.session_state.get('master_port', '5000')}"
                 master_conn = xmlrpc.client.ServerProxy(master_url)
                 
                 st.write("3. Asking Master for active Data Nodes...")
                 active_nodes = master_conn.get_active_nodes()
                 
-                # Safety check: Prevent upload if the whole cluster is down!
                 if not active_nodes:
                     status.update(label="Upload Failed!", state="error", expanded=False)
                     st.error("⚠️ Both Data Nodes are currently unavailable. Please wait and try again after some time.")
-                    st.stop() # Stops the script from continuing
+                    st.stop()
                 
                 st.write(f"   -> Found {len(active_nodes)} live nodes: {active_nodes}")
-                
                 st.write("4. Assigning chunks (Replication Factor = 2)...")
+                
                 metadata = []
                 REPLICATION_FACTOR = 2
-                
-                # Make sure we don't try to replicate more times than we have nodes!
                 rep_factor = min(REPLICATION_FACTOR, len(active_nodes))
                 
                 for index, chunk in enumerate(chunks):
                     assigned_nodes = []
-                    # Pick a primary node and a backup node
                     for r in range(rep_factor):
                         target_node = active_nodes[(index + r) % len(active_nodes)]
                         assigned_nodes.append(target_node)
-                        
-                        # ---> NEW: Tell the Master about ALL copies, including the HASH
                         metadata.append({
                             'chunk_name': chunk['chunk_name'], 
                             'node_ip': target_node,
                             'hash': chunk['hash'] 
                         })
-                        
-                    chunk['assigned_nodes'] = assigned_nodes # Save for the transfer step
+                    chunk['assigned_nodes'] = assigned_nodes
                 
                 st.write("5. Registering map with Master Database...")
                 master_conn.register_file_chunks(uploaded_file.name, metadata)
@@ -181,56 +157,49 @@ with col1:
                             st.warning(f"Failed to send {chunk['chunk_name']} to {target_node}")
                 
                 status.update(label="Upload Complete!", state="complete", expanded=False)
-                st.success(f"{uploaded_file.name} successfully replicated across the cluster!")
+                st.toast(f"✅ {uploaded_file.name} successfully replicated!")
 
 with col2:
     st.subheader("Files in DFS")
     
-    # Only try to fetch files if the system is currently connected
     if st.session_state.get('connected', False):
         try:
-            # Connect to the Master Node over the network
             master_url = f"http://{st.session_state.get('master_ip', '127.0.0.1')}:{st.session_state.get('master_port', '5000')}"
             master_conn = xmlrpc.client.ServerProxy(master_url)
             
-            # Fetch the live directory from the Master's SQLite database
             live_registry = master_conn.get_file_directory()
             
-            # Display the files with Download and Delete buttons
             if live_registry:
                 for filename, status in live_registry.items():
                     
-                    # Create a mini-grid: 3 parts text, 1 part Download, 1 part Delete
-                    text_col, dl_col, del_col = st.columns([3, 1, 1])
+                    # ---> NEW: 4-Column Layout to fit the Preview button
+                    text_col, prev_col, dl_col, del_col = st.columns([3, 1, 1, 1])
                     
                     with text_col:
                         st.markdown(f"**📄 {filename}** ({status})")
+                        
+                    # ---> NEW: In-Memory Image Preview Logic
+                    with prev_col:
+                        # Smart check to disable button if the file is not an image
+                        is_image = filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
+                        preview_clicked = st.button("Preview", key=f"prev_btn_{filename}", disabled=not is_image)
                     
                     with dl_col:
                         if st.button("Download", key=f"dl_btn_{filename}"):
-                            
-                            # Check if the cluster is alive BEFORE trying to download 
                             active_nodes = master_conn.get_active_nodes()
-                            
                             if not active_nodes:
-                                st.error("⚠️ Both Data Nodes are currently unavailable. Please wait and try again after some time.")
+                                st.error("⚠️ Both Data Nodes are currently unavailable.")
                             else:
                                 with st.spinner(f"Fetching chunks for {filename}..."):
-                                    # Ask Master where the chunks are
                                     chunk_locations = master_conn.get_chunk_locations(filename)
-                                    
-                                    # Ensure we have a unique list of chunk names to loop through
                                     chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
                                     
-                                    # Create a downloads folder if it doesn't exist
                                     if not os.path.exists("downloads"):
                                         os.makedirs("downloads")
                                     
                                     save_path = f"downloads/recovered_{filename}"
                                     
-                                    # Download from Data Nodes and stitch together
                                     try:
-                                        # ---> NEW: Group the locations AND save the expected hash
                                         chunk_map = {}
                                         for c_name, n_ip, c_hash in chunk_locations:
                                             if c_name not in chunk_map:
@@ -242,64 +211,95 @@ with col2:
                                                 chunk_recovered = False
                                                 expected_hash = chunk_map[chunk_name]['hash']
                                                 
-                                                # Try each node that holds this chunk until one works AND passes the hash check
                                                 for target_node in chunk_map[chunk_name]['nodes']:
                                                     try:
                                                         node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
                                                         chunk_data = node_conn.get_chunk(chunk_name)
-                                                        
-                                                        # ---> DATA INTEGRITY CHECK <---
                                                         downloaded_hash = hashlib.sha256(chunk_data.data).hexdigest()
                                                         
                                                         if downloaded_hash == expected_hash:
                                                             outfile.write(chunk_data.data)
                                                             chunk_recovered = True
-                                                            break # Success! Hash matches.
+                                                            break
                                                         else:
-                                                            st.warning(f"⚠️ CORRUPTION DETECTED: {chunk_name} on {target_node} failed hash verification! Discarding and trying backup...")
-                                                            print(f"[CORRUPT] {chunk_name} from {target_node}")
-                                                            
+                                                            st.warning(f"⚠️ CORRUPTION DETECTED on {target_node}!")
                                                     except Exception:
-                                                        print(f"[WARNING] Node {target_node} is down. Trying backup...")
+                                                        pass
                                                 
                                                 if not chunk_recovered:
-                                                    raise Exception(f"All nodes holding {chunk_name} are completely offline or corrupted!")
+                                                    raise Exception(f"All nodes holding {chunk_name} are offline/corrupt!")
                                                 
-                                        st.success(f"Successfully downloaded & verified to: {save_path}")
+                                        st.toast(f"✅ Successfully downloaded {filename}!")
                                     except Exception as e:
                                         st.error(f"Download failed: {e}")
 
                     with del_col:
-                        # Use type="primary" to make the Delete button stand out (red)
                         if st.button("Delete", type="primary", key=f"del_btn_{filename}"):
                             with st.spinner("Purging file from cluster..."):
                                 try:
-                                    # 1. Ask Master where ALL copies of the chunks live
                                     chunk_locations = master_conn.get_chunk_locations(filename)
-                                    
-                                    # 2. Tell every Data Node holding a piece to physically delete it
                                     for loc in chunk_locations:
-                                        chunk_name = loc[0]
-                                        node_ip = loc[1]
                                         try:
-                                            node_conn = xmlrpc.client.ServerProxy(f"http://{node_ip}")
-                                            node_conn.delete_chunk(chunk_name)
+                                            node_conn = xmlrpc.client.ServerProxy(f"http://{loc[1]}")
+                                            node_conn.delete_chunk(loc[0])
                                         except Exception:
-                                            # If a node is currently offline, we just skip it for now
-                                            print(f"⚠️ Could not reach {node_ip} to delete {chunk_name}")
+                                            pass
                                             
-                                    # 3. Wipe the memory from the Master's database
                                     success = master_conn.delete_file_metadata(filename)
-                                    
                                     if success:
-                                        st.success("File completely purged!")
-                                        import time
-                                        time.sleep(1) # Pause so the user sees the success message
-                                        st.rerun() # Instantly refresh UI so it disappears from the list
+                                        st.toast("🗑️ File completely purged!")
+                                        time.sleep(1) 
+                                        st.rerun() 
                                     else:
-                                        st.error("Failed to delete metadata from Master.")
+                                        st.error("Failed to delete metadata.")
                                 except Exception as e:
                                     st.error(f"Deletion error: {e}")
+                                    
+                    # ---> RENDERING THE PREVIEW (Displays underneath the file entry if clicked)
+                    if preview_clicked:
+                        active_nodes = master_conn.get_active_nodes()
+                        if not active_nodes:
+                            st.error("⚠️ Cluster Offline.")
+                        else:
+                            with st.spinner("Fetching chunks from RAM..."):
+                                try:
+                                    chunk_locations = master_conn.get_chunk_locations(filename)
+                                    chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
+                                    chunk_map = {}
+                                    for c_name, n_ip, c_hash in chunk_locations:
+                                        if c_name not in chunk_map:
+                                            chunk_map[c_name] = {'nodes': [], 'hash': c_hash}
+                                        chunk_map[c_name]['nodes'].append(n_ip)
+                                        
+                                    # Use a bytearray to act as an in-memory canvas
+                                    file_bytes = bytearray()
+                                    
+                                    for chunk_name in chunk_names:
+                                        chunk_recovered = False
+                                        expected_hash = chunk_map[chunk_name]['hash']
+                                        
+                                        for target_node in chunk_map[chunk_name]['nodes']:
+                                            try:
+                                                node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
+                                                chunk_data = node_conn.get_chunk(chunk_name)
+                                                downloaded_hash = hashlib.sha256(chunk_data.data).hexdigest()
+                                                if downloaded_hash == expected_hash:
+                                                    file_bytes.extend(chunk_data.data) # Append bytes into memory
+                                                    chunk_recovered = True
+                                                    break
+                                            except Exception:
+                                                pass
+                                        
+                                        if not chunk_recovered:
+                                            raise Exception("Missing or corrupt chunks prevented preview.")
+                                    
+                                    # Pass the compiled bytes directly into Streamlit's image renderer
+                                    st.image(file_bytes, caption=f"Live Preview: {filename}", use_container_width=True)
+                                except Exception as e:
+                                    st.error(f"Preview failed: {e}")
+                    
+                    st.divider() # Adds a clean line below each file and its preview
+                                    
             else:
                 st.info("ℹ️ No files currently in the system.")
                 
