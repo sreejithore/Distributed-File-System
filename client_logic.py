@@ -1,30 +1,25 @@
 import os
+import hashlib
 
 CHUNK_SIZE = 2 * 1024 * 1024  # 2MB chunks
 
 def split_file(file_bytes, filename):
-    """
-    Splits a file into chunks in memory to be sent over the network.
-    """
-    chunk_data_list = []
-    total_size = len(file_bytes)
+    """Splits a file into chunks and calculates a SHA-256 hash for each."""
+    chunks = []
     
-    num_chunks = (total_size // CHUNK_SIZE) + (1 if total_size % CHUNK_SIZE > 0 else 0)
-    
-    for i in range(num_chunks):
-        start = i * CHUNK_SIZE
-        end = min((i + 1) * CHUNK_SIZE, total_size)
+    for i in range(0, len(file_bytes), CHUNK_SIZE):
+        chunk_data = file_bytes[i:i+CHUNK_SIZE]
         
-        chunk_bytes = file_bytes[start:end]
-        chunk_name = f"{filename}_part{i+1}"
+        # ---> NEW: Calculate the SHA-256 hash of this specific chunk
+        chunk_hash = hashlib.sha256(chunk_data).hexdigest()
         
-        # Instead of saving to disk, we add the raw bytes to our list
-        chunk_data_list.append({
-            "chunk_name": chunk_name,
-            "raw_bytes": chunk_bytes
+        chunks.append({
+            'chunk_name': f"{filename}_part_{i}",
+            'raw_bytes': chunk_data,
+            'hash': chunk_hash  # Save the hash in the dictionary
         })
-    
-    return chunk_data_list
+        
+    return chunks
 
 def stitch_file(filename, chunk_names, output_dir="."):
     """
