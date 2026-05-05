@@ -161,7 +161,7 @@ def display_analytics():
 #         MODAL: IMAGE PREVIEW DIALOG
 # ==========================================
 @st.dialog("🖼️ Live Image Preview", width="large")
-def show_preview_dialog(filename, version, master_ip, master_port): # <--- Added version
+def show_preview_dialog(filename, version, master_ip, master_port): 
     try:
         master_url = f"http://{master_ip}:{master_port}"
         master_conn = xmlrpc.client.ServerProxy(master_url)
@@ -172,7 +172,7 @@ def show_preview_dialog(filename, version, master_ip, master_port): # <--- Added
             return
             
         with st.spinner(f"Fetching '{filename}' (v{version}) from RAM..."):
-            chunk_locations = master_conn.get_chunk_locations(filename, version) # <--- Pass version to Master
+            chunk_locations = master_conn.get_chunk_locations(filename, version) 
             chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
             chunk_map = {}
             for c_name, n_ip, c_hash in chunk_locations:
@@ -236,7 +236,6 @@ if app_page == "Main Dashboard":
                     st.write("1. Reading file into memory...")
                     file_bytes = uploaded_file.getvalue()
                     
-                    # ---> NEW: Ask the master for the next version number
                     st.write("2. Checking version history...")
                     next_version = master_conn.get_next_version(uploaded_file.name)
                     st.write(f"   -> Assigning as Version {next_version}")
@@ -262,7 +261,6 @@ if app_page == "Main Dashboard":
                             })
                         chunk['assigned_nodes'] = assigned_nodes
                     
-                    # ---> NEW: Register with version
                     st.write("5. Registering map with Master...")
                     master_conn.register_file_chunks(uploaded_file.name, next_version, metadata)
                     
@@ -288,29 +286,33 @@ if app_page == "Main Dashboard":
                 master_url = f"http://{st.session_state.get('master_ip', '127.0.0.1')}:{st.session_state.get('master_port', '5000')}"
                 master_conn = xmlrpc.client.ServerProxy(master_url)
                 
-                # ---> Fetch dictionary with embedded version lists
                 live_registry = master_conn.get_file_directory()
                 
                 if live_registry:
                     with st.container(height=500, border=True):
                         for filename, data in live_registry.items():
                             
-                            # Expand layout to 5 columns to fit the new version dropdown
                             text_col, ver_col, prev_col, dl_col, del_col = st.columns([3, 1.5, 1, 1, 1])
                             
                             with text_col:
                                 st.markdown(f"**📄 {filename}**")
                                 st.caption(f"{data['total_chunks']} chunks across {len(data['versions'])} versions")
                                 
-                            # ---> NEW: The Version Selector
+                            # ---> NEW: Hide Dropdown Logic [cite: 2041]
                             with ver_col:
-                                selected_version = st.selectbox(
-                                    "Version", 
-                                    options=data['versions'], 
-                                    format_func=lambda x: f"v{x}", 
-                                    key=f"ver_{filename}", 
-                                    label_visibility="collapsed"
-                                )
+                                if len(data['versions']) > 1:
+                                    # Show dropdown if multiple versions exist
+                                    selected_version = st.selectbox(
+                                        "Version", 
+                                        options=data['versions'], 
+                                        format_func=lambda x: f"v{x}", 
+                                        key=f"ver_{filename}", 
+                                        label_visibility="collapsed"
+                                    )
+                                else:
+                                    # Hide dropdown and just show plain text if only 1 version exists
+                                    selected_version = data['versions'][0]
+                                    st.write(f"**v{selected_version}**")
                                 
                             with prev_col:
                                 is_image = filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
@@ -323,14 +325,12 @@ if app_page == "Main Dashboard":
                                         st.toast("⚠️ Both Data Nodes are unavailable.", icon="🚨")
                                     else:
                                         with st.spinner(f"Fetching chunks for {filename} (v{selected_version})..."):
-                                            # ---> NEW: Ask for the specifically selected version
                                             chunk_locations = master_conn.get_chunk_locations(filename, selected_version)
                                             chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
                                             
                                             if not os.path.exists("downloads"):
                                                 os.makedirs("downloads")
                                             
-                                            # Save with the version in the name locally
                                             save_path = f"downloads/recovered_v{selected_version}_{filename}"
                                             try:
                                                 chunk_map = {}
@@ -366,21 +366,18 @@ if app_page == "Main Dashboard":
                                             except Exception as e:
                                                 st.toast(f"❌ Download failed: {e}")
 
-                            # ---> THE MASTER PURGE
                             with del_col:
                                 if st.button("Delete", type="primary", key=f"del_btn_{filename}"):
                                     with st.spinner("Purging ALL versions from cluster..."):
                                         try:
-                                            # Fetch physical chunks across ALL versions to delete from nodes
                                             all_chunk_locations = master_conn.get_all_chunk_locations(filename)
                                             for loc in all_chunk_locations:
                                                 try:
                                                     node_conn = xmlrpc.client.ServerProxy(f"http://{loc[1]}")
                                                     node_conn.delete_chunk(loc[0])
                                                 except Exception:
-                                                    pass # Offline nodes will be cleaned by the garbage collector
+                                                    pass 
                                                     
-                                            # Delete from DB (The Master Purge!)
                                             success = master_conn.delete_file_metadata(filename)
                                             if success:
                                                 st.toast("🗑️ All file versions permanently purged!")
