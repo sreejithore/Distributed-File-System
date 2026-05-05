@@ -52,6 +52,19 @@ def init_db():
 
 # --- RPC EXPOSED FUNCTIONS ---
 
+def verify_chunk_exists(chunk_name):
+    """Answers the Data Node: Is this chunk still in the active database?"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM file_chunks WHERE chunk_name=?", (chunk_name,))
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as e:
+        print(f"[ERROR] Database verification error: {e}")
+        return True # If database is locked/busy, play it safe and say "Yes, keep it"
+    
 def get_cluster_stats():
     try:
         conn = sqlite3.connect(DB_FILE)
@@ -199,6 +212,7 @@ def start_master():
     server = xmlrpc.server.SimpleXMLRPCServer(server_address, allow_none=True)
     
     server.register_function(get_cluster_stats, "get_cluster_stats")
+    server.register_function(verify_chunk_exists, "verify_chunk_exists")
     server.register_function(register_file_chunks, "register_file_chunks")
     server.register_function(get_file_directory, "get_file_directory")
     server.register_function(get_chunk_locations, "get_chunk_locations")

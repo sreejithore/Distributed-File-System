@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import sys # <-- NEW IMPORT
+import threading
 
 # --- NODE CONFIGURATION ---
 NODE_IP = "127.0.0.1"
@@ -23,6 +24,31 @@ if not os.path.exists(STORAGE_DIR):
 
 # --- CORE STORAGE FUNCTIONS ---
 
+def garbage_collector(master_url, storage_dir):
+    """Periodically asks the Master if local chunks are still valid."""
+    while True:
+        time.sleep(10) # Run cleanup every 30 seconds
+        try:
+            master_conn = xmlrpc.client.ServerProxy(master_url)
+            
+            # Look at every physical file in the storage folder
+            for filename in os.listdir(storage_dir):
+                file_path = os.path.join(storage_dir, filename)
+                
+                # Only check actual files (ignore folders if any)
+                if os.path.isfile(file_path):
+                    # Ask the Master if this chunk is still registered
+                    is_valid = master_conn.verify_chunk_exists(filename)
+                    
+                    if not is_valid:
+                        # The Master has no memory of this chunk. It is an orphan!
+                        print(f"🧹 [GARBAGE COLLECTOR] Deleting orphaned chunk: {filename}")
+                        os.remove(file_path)
+                        
+        except Exception as e:
+            # If the Master is offline, don't delete anything, just wait.
+            pass
+        
 def store_chunk(chunk_name, chunk_data):
     """Receives a binary chunk from the Client and saves it to disk."""
     try:
@@ -107,6 +133,7 @@ def start_data_node():
     
     try:
         server.serve_forever()
+        threading.Thread(target=garbage_collector, args=("http://127.0.0.1:5000", storage_directory), daemon=True).start()
     except KeyboardInterrupt:
         print("\nData Node shutting down.")
 
