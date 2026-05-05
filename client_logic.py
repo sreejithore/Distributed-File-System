@@ -16,7 +16,8 @@ def split_file(file_bytes, filename):
         chunks.append({
             'chunk_name': f"{filename}_part_{i}",
             'raw_bytes': chunk_data,
-            'hash': chunk_hash  # Save the hash in the dictionary
+            'hash': chunk_hash,  # Save the hash in the dictionary
+            'size_bytes': len(chunk_data)
         })
         
     return chunks

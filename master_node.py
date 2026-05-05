@@ -14,7 +14,7 @@ HEARTBEAT_TIMEOUT = 6.0
 def receive_heartbeat(node_address):
     """Catches the ping from the Data Nodes and updates their timestamp."""
     live_nodes[node_address] = time.time()
-    # print(f"💓 Heartbeat received from {node_address}") # Silenced for clean logs
+    print(f"💓 Heartbeat received from {node_address}") # Silenced for clean logs
     return True
 
 def get_active_nodes():
@@ -43,7 +43,8 @@ def init_db():
             filename TEXT,
             chunk_name TEXT,
             node_ip TEXT,
-            chunk_hash TEXT
+            chunk_hash TEXT,
+            chunk_size INTEGER
         )
     ''')
     conn.commit()
@@ -52,26 +53,24 @@ def init_db():
 # --- RPC EXPOSED FUNCTIONS ---
 
 def get_cluster_stats():
-    """Calculates and returns live analytics about the cluster's storage."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # 1. Get total number of unique files
         cursor.execute("SELECT COUNT(DISTINCT filename) FROM file_chunks")
         total_files = cursor.fetchone()[0]
         
-        # 2. Get chunk distribution per node
-        cursor.execute("SELECT node_ip, COUNT(chunk_name) FROM file_chunks GROUP BY node_ip")
+        # ---> NEW: SUM the exact byte sizes instead of just counting chunks
+        cursor.execute("SELECT node_ip, SUM(chunk_size) FROM file_chunks GROUP BY node_ip")
         node_chunks = cursor.fetchall()
         conn.close()
         
-        # 3. Calculate storage (Each chunk is strictly 2MB)
         node_storage = {}
-        for ip, count in node_chunks:
-            # Format the IP nicely (e.g., "Node 5001")
+        for ip, total_bytes in node_chunks:
             node_name = f"Node {ip.split(':')[-1]}"
-            node_storage[node_name] = count * 2  # Multiply by 2MB
+            # ---> NEW: Convert raw bytes to Megabytes and round to 2 decimal places
+            size_in_mb = round(total_bytes / (1024 * 1024), 2)
+            node_storage[node_name] = size_in_mb
             
         return {
             "total_files": total_files,
@@ -81,7 +80,7 @@ def get_cluster_stats():
     except Exception as e:
         print(f"[ERROR] Failed to fetch cluster stats: {e}")
         return {"total_files": 0, "node_storage_mb": {}, "replication_factor": 2}
-
+    
 def delete_file_metadata(filename):
     """Deletes the file's chunk map from the Master's database."""
     try:
@@ -97,17 +96,16 @@ def delete_file_metadata(filename):
         return False
 
 def register_file_chunks(filename, chunk_data):
-    """Called by the Client when uploading."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         for chunk in chunk_data:
-            # ---> NEW: Added chunk_hash to the INSERT statement
-            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash) VALUES (?, ?, ?, ?)",
-                           (filename, chunk['chunk_name'], chunk['node_ip'], chunk['hash']))
+            # ---> NEW: Insert the chunk_size into the database
+            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size) VALUES (?, ?, ?, ?, ?)",
+                           (filename, chunk['chunk_name'], chunk['node_ip'], chunk['hash'], chunk['size_bytes']))
         conn.commit()
         conn.close()
-        print(f"[INFO] Registered new file: {filename} with {len(chunk_data)} chunks.")
+        print(f"[INFO] Registered new file: {filename}")
         return True
     except Exception as e:
         print(f"[ERROR] Database error: {e}")
@@ -153,14 +151,15 @@ def replication_monitor():
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             
-            # ---> NEW: Balancer now fetches the chunk_hash to preserve data integrity
-            cursor.execute("SELECT filename, chunk_name, node_ip, chunk_hash FROM file_chunks")
+            # ---> UPDATE QUERY 1: Select the chunk_size alongside the hash
+            cursor.execute("SELECT filename, chunk_name, node_ip, chunk_hash, chunk_size FROM file_chunks")
             all_chunks = cursor.fetchall()
             
             chunk_map = {}
-            for filename, chunk_name, node_ip, chunk_hash in all_chunks:
+            for filename, chunk_name, node_ip, chunk_hash, chunk_size in all_chunks:
                 if chunk_name not in chunk_map:
-                    chunk_map[chunk_name] = {'filename': filename, 'nodes': [], 'hash': chunk_hash}
+                    # Save the exact byte size in our temporary dictionary
+                    chunk_map[chunk_name] = {'filename': filename, 'nodes': [], 'hash': chunk_hash, 'size_bytes': chunk_size}
                 chunk_map[chunk_name]['nodes'].append(node_ip)
                 
             for chunk_name, data in chunk_map.items():
@@ -180,9 +179,9 @@ def replication_monitor():
                             target_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
                             target_conn.store_chunk(chunk_name, chunk_data)
                             
-                            # ---> NEW: Balancer saves the chunk_hash to the new database row
-                            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash) VALUES (?, ?, ?, ?)",
-                                           (data['filename'], chunk_name, target_node, data['hash']))
+                            # ---> UPDATE QUERY 2: Insert the chunk_size for the backup row
+                            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size) VALUES (?, ?, ?, ?, ?)",
+                                           (data['filename'], chunk_name, target_node, data['hash'], data['size_bytes']))
                             conn.commit()
                             print(f"✅ [BALANCER] Successfully replicated {chunk_name} to backup node!")
                         except Exception as e:
@@ -191,7 +190,7 @@ def replication_monitor():
             conn.close()
         except Exception as e:
             print(f"[ERROR] Balancer crashed: {e}")
-
+            
 # --- SERVER STARTUP ---
 def start_master():
     init_db()

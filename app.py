@@ -211,7 +211,8 @@ if app_page == "Main Dashboard":
                             metadata.append({
                                 'chunk_name': chunk['chunk_name'], 
                                 'node_ip': target_node,
-                                'hash': chunk['hash'] 
+                                'hash': chunk['hash'],
+                                'size_bytes': chunk['size_bytes']
                             })
                         chunk['assigned_nodes'] = assigned_nodes
                     
