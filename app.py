@@ -110,36 +110,27 @@ def display_analytics():
                 
             st.divider()
             
-            # ==========================================
-            #      NEW: TIME-SERIES LINE GRAPH
-            # ==========================================
             timeline_data = master_conn.get_storage_timeline()
             
             if timeline_data:
                 st.markdown("### 📈 Storage Growth Over Time")
                 
                 df = pd.DataFrame(timeline_data, columns=["Node", "Size", "Timestamp"])
-                
-                # 1. Clean up Node names and convert byte sizes to MB
                 df['Node'] = df['Node'].apply(lambda x: f"Node {x.split(':')[-1]}") 
                 df['Size (MB)'] = df['Size'] / (1024 * 1024) 
                 
-                # ---> THE FORWARD FILL FIX <---
                 import time as sys_time
                 current_unix_time = sys_time.time()
                 present_rows = []
                 for node in df['Node'].unique():
                     present_rows.append({"Node": node, "Size (MB)": 0.0, "Timestamp": current_unix_time})
                 
-                # Append these "present moment" anchors to our dataframe
                 df = pd.concat([df, pd.DataFrame(present_rows)], ignore_index=True)
                 
-                # 2. Format the time and calculate the cumulative storage
                 df['Time'] = pd.to_datetime(df['Timestamp'], unit='s') 
                 df = df.sort_values('Time')
                 df['Total Storage (MB)'] = df.groupby('Node')['Size (MB)'].cumsum()
                 
-                # 3. Draw the chart with interpolate='step-after'
                 line_chart = alt.Chart(df).mark_line(point=True, interpolate='step-after').encode(
                     x=alt.X('Time:T', title='Time of Upload / Replication'),
                     y=alt.Y('Total Storage (MB):Q', title='Total Storage (MB)'),
@@ -158,7 +149,7 @@ def display_analytics():
 
 
 # ==========================================
-#         MODAL: IMAGE PREVIEW DIALOG
+#         MODAL 1: IMAGE PREVIEW
 # ==========================================
 @st.dialog("🖼️ Live Image Preview", width="large")
 def show_preview_dialog(filename, version, master_ip, master_port): 
@@ -204,6 +195,129 @@ def show_preview_dialog(filename, version, master_ip, master_port):
     except Exception as e:
         st.error(f"❌ Preview failed: {e}")
 
+# ==========================================
+#      NEW MODAL 2: THE CHUNK MATRIX
+# ==========================================
+@st.dialog("⏬ Network Protocol: Reassembling File", width="large")
+def download_matrix_dialog(filename, version, master_ip, master_port):
+    """Visualizes the download and hash-verification process in a Hacker Matrix grid."""
+    st.markdown(f"**Target:** `{filename}` (v{version})")
+    
+    try:
+        master_url = f"http://{master_ip}:{master_port}"
+        master_conn = xmlrpc.client.ServerProxy(master_url)
+        active_nodes = master_conn.get_active_nodes()
+        
+        if not active_nodes:
+            st.error("⚠️ Cluster Offline. Download aborted.")
+            return
+
+        chunk_locations = master_conn.get_chunk_locations(filename, version)
+        chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
+        
+        if not chunk_names:
+            st.error("⚠️ File metadata not found in Master Node.")
+            return
+
+        # 1. Initialize State Tracker (0: Pending, 1: Fetching, 2: Verified, -1: Corrupt)
+        chunk_states = {name: 0 for name in chunk_names}
+        
+        # UI Placeholders for real-time updates
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        grid_placeholder = st.empty()
+        
+        # The CSS for the Hacker Grid
+        css_styles = """
+        <style>
+        .matrix-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; margin-bottom: 20px;}
+        .chunk-box { width: 35px; height: 35px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-family: monospace; font-size: 11px; font-weight: bold; color: white; transition: all 0.2s ease-in-out; }
+        .pending { background-color: #1e293b; border: 1px solid #334155; color: #64748b; }
+        .fetching { background-color: #eab308; box-shadow: 0 0 12px #eab308; animation: pulse 0.8s infinite; color: black; border: 1px solid #fef08a;}
+        .verified { background-color: #22c55e; box-shadow: 0 0 8px #22c55e; border: 1px solid #86efac; }
+        .corrupt { background-color: #ef4444; box-shadow: 0 0 12px #ef4444; border: 1px solid #fca5a5; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+        </style>
+        """
+
+        # Function to redraw the grid dynamically
+        def render_grid():
+            html = css_styles + "<div class='matrix-grid'>"
+            for idx, name in enumerate(chunk_names):
+                state = chunk_states[name]
+                if state == 0:   css_class = "pending"
+                elif state == 1: css_class = "fetching"
+                elif state == 2: css_class = "verified"
+                else:            css_class = "corrupt"
+                
+                html += f"<div class='chunk-box {css_class}'>{idx}</div>"
+            html += "</div>"
+            grid_placeholder.markdown(html, unsafe_allow_html=True)
+
+        render_grid() # Draw initial gray grid
+
+        # 2. Build map of where chunks live
+        chunk_map = {}
+        for c_name, n_ip, c_hash in chunk_locations:
+            if c_name not in chunk_map:
+                chunk_map[c_name] = {'nodes': [], 'hash': c_hash}
+            chunk_map[c_name]['nodes'].append(n_ip)
+
+        # 3. Create folder and begin transfer
+        if not os.path.exists("downloads"):
+            os.makedirs("downloads")
+        save_path = f"downloads/recovered_v{version}_{filename}"
+
+        with open(save_path, 'wb') as outfile:
+            for idx, chunk_name in enumerate(chunk_names):
+                # Update UI: Fetching
+                chunk_states[chunk_name] = 1
+                status_text.markdown(f"📡 **Fetching:** `{chunk_name}` ...")
+                render_grid()
+                
+                # ARTIFICIAL DELAY: So we can actually see the UI matrix working on localhost
+                time.sleep(0.38) 
+                
+                chunk_recovered = False
+                expected_hash = chunk_map[chunk_name]['hash']
+                
+                for target_node in chunk_map[chunk_name]['nodes']:
+                    try:
+                        node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
+                        chunk_data = node_conn.get_chunk(chunk_name)
+                        downloaded_hash = hashlib.sha256(chunk_data.data).hexdigest()
+                        
+                        if downloaded_hash == expected_hash:
+                            outfile.write(chunk_data.data)
+                            chunk_recovered = True
+                            # Update UI: Verified Green
+                            chunk_states[chunk_name] = 2
+                            break
+                        else:
+                            # Update UI: Corrupt Red
+                            chunk_states[chunk_name] = -1
+                            render_grid()
+                            time.sleep(0.5) # Pause so user sees the red flash
+                    except Exception:
+                        pass
+                
+                if not chunk_recovered:
+                    status_text.error(f"❌ FATAL: All nodes offline/corrupt for `{chunk_name}`!")
+                    chunk_states[chunk_name] = -1
+                    render_grid()
+                    return # Abort download
+                
+                # Update progress bar
+                progress = (idx + 1) / len(chunk_names)
+                progress_bar.progress(progress)
+                render_grid()
+
+        status_text.success(f"✅ **Integrity Verified.** File saved to `/downloads`!")
+        time.sleep(1.5)
+        st.rerun() # Close modal and refresh UI
+
+    except Exception as e:
+        st.error(f"❌ Network Protocol Failed: {e}")
 
 # ==========================================
 #               PAGE ROUTING
@@ -298,10 +412,8 @@ if app_page == "Main Dashboard":
                                 st.markdown(f"**📄 {filename}**")
                                 st.caption(f"{data['total_chunks']} chunks across {len(data['versions'])} versions")
                                 
-                            # ---> NEW: Hide Dropdown Logic [cite: 2041]
                             with ver_col:
                                 if len(data['versions']) > 1:
-                                    # Show dropdown if multiple versions exist
                                     selected_version = st.selectbox(
                                         "Version", 
                                         options=data['versions'], 
@@ -310,7 +422,6 @@ if app_page == "Main Dashboard":
                                         label_visibility="collapsed"
                                     )
                                 else:
-                                    # Hide dropdown and just show plain text if only 1 version exists
                                     selected_version = data['versions'][0]
                                     st.write(f"**v{selected_version}**")
                                 
@@ -318,53 +429,10 @@ if app_page == "Main Dashboard":
                                 is_image = filename.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.gif'))
                                 preview_clicked = st.button("Preview", key=f"prev_btn_{filename}", disabled=not is_image)
                             
+                            # ---> NEW: Download Button Triggers the Modal
                             with dl_col:
                                 if st.button("Download", key=f"dl_btn_{filename}"):
-                                    active_nodes = master_conn.get_active_nodes()
-                                    if not active_nodes:
-                                        st.toast("⚠️ Both Data Nodes are unavailable.", icon="🚨")
-                                    else:
-                                        with st.spinner(f"Fetching chunks for {filename} (v{selected_version})..."):
-                                            chunk_locations = master_conn.get_chunk_locations(filename, selected_version)
-                                            chunk_names = list(dict.fromkeys([loc[0] for loc in chunk_locations]))
-                                            
-                                            if not os.path.exists("downloads"):
-                                                os.makedirs("downloads")
-                                            
-                                            save_path = f"downloads/recovered_v{selected_version}_{filename}"
-                                            try:
-                                                chunk_map = {}
-                                                for c_name, n_ip, c_hash in chunk_locations:
-                                                    if c_name not in chunk_map:
-                                                        chunk_map[c_name] = {'nodes': [], 'hash': c_hash}
-                                                    chunk_map[c_name]['nodes'].append(n_ip)
-                                                    
-                                                with open(save_path, 'wb') as outfile:
-                                                    for chunk_name in chunk_names:
-                                                        chunk_recovered = False
-                                                        expected_hash = chunk_map[chunk_name]['hash']
-                                                        
-                                                        for target_node in chunk_map[chunk_name]['nodes']:
-                                                            try:
-                                                                node_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
-                                                                chunk_data = node_conn.get_chunk(chunk_name)
-                                                                downloaded_hash = hashlib.sha256(chunk_data.data).hexdigest()
-                                                                
-                                                                if downloaded_hash == expected_hash:
-                                                                    outfile.write(chunk_data.data)
-                                                                    chunk_recovered = True
-                                                                    break
-                                                                else:
-                                                                    st.toast(f"⚠️ CORRUPTION DETECTED on {target_node}!", icon="🚨")
-                                                            except Exception:
-                                                                pass
-                                                        
-                                                        if not chunk_recovered:
-                                                            raise Exception(f"All nodes offline/corrupt for {chunk_name}!")
-                                                        
-                                                st.toast(f"✅ Successfully downloaded v{selected_version} to downloads folder!")
-                                            except Exception as e:
-                                                st.toast(f"❌ Download failed: {e}")
+                                    download_matrix_dialog(filename, selected_version, st.session_state['master_ip'], st.session_state['master_port'])
 
                             with del_col:
                                 if st.button("Delete", type="primary", key=f"del_btn_{filename}"):
