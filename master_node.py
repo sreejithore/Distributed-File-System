@@ -44,7 +44,8 @@ def init_db():
             chunk_name TEXT,
             node_ip TEXT,
             chunk_hash TEXT,
-            chunk_size INTEGER
+            chunk_size INTEGER,
+            timestamp REAL
         )
     ''')
     conn.commit()
@@ -64,6 +65,20 @@ def verify_chunk_exists(chunk_name):
     except Exception as e:
         print(f"[ERROR] Database verification error: {e}")
         return True # If database is locked/busy, play it safe and say "Yes, keep it"
+
+def get_storage_timeline():
+    """Fetches the raw timeline of every chunk added to the system."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        # Fetch the Node IP, the Byte Size, and the Timestamp, sorted from oldest to newest
+        cursor.execute("SELECT node_ip, chunk_size, timestamp FROM file_chunks ORDER BY timestamp ASC")
+        data = cursor.fetchall()
+        conn.close()
+        return data
+    except Exception as e:
+        print(f"[ERROR] Timeline error: {e}")
+        return []
     
 def get_cluster_stats():
     try:
@@ -109,13 +124,21 @@ def delete_file_metadata(filename):
         return False
 
 def register_file_chunks(filename, chunk_data):
+    """Called by the Client when uploading."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
+        
         for chunk in chunk_data:
-            # ---> NEW: Insert the chunk_size into the database
-            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size) VALUES (?, ?, ?, ?, ?)",
-                           (filename, chunk['chunk_name'], chunk['node_ip'], chunk['hash'], chunk['size_bytes']))
+            # ---> MOVED INSIDE THE LOOP: Generates a unique timestamp per chunk
+            current_time = time.time() 
+            
+            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                           (filename, chunk['chunk_name'], chunk['node_ip'], chunk['hash'], chunk['size_bytes'], current_time))
+            
+            # Tiny pause to ensure timestamps are visually separated on the graph
+            time.sleep(0.01) 
+            
         conn.commit()
         conn.close()
         print(f"[INFO] Registered new file: {filename}")
@@ -153,10 +176,11 @@ def replication_monitor():
     REPLICATION_FACTOR = 2
     
     while True:
-        time.sleep(10)
+        time.sleep(10) # Check the system every 10 seconds
         
         active_nodes = get_active_nodes()
         
+        # If we don't have at least 2 nodes online, we can't replicate anyway
         if len(active_nodes) < REPLICATION_FACTOR:
             continue
             
@@ -164,37 +188,45 @@ def replication_monitor():
             conn = sqlite3.connect(DB_FILE)
             cursor = conn.cursor()
             
-            # ---> UPDATE QUERY 1: Select the chunk_size alongside the hash
+            # Fetch every chunk in the database (including hash and size for integrity and analytics)
             cursor.execute("SELECT filename, chunk_name, node_ip, chunk_hash, chunk_size FROM file_chunks")
             all_chunks = cursor.fetchall()
             
+            # Group them to see how many copies exist
             chunk_map = {}
             for filename, chunk_name, node_ip, chunk_hash, chunk_size in all_chunks:
                 if chunk_name not in chunk_map:
-                    # Save the exact byte size in our temporary dictionary
                     chunk_map[chunk_name] = {'filename': filename, 'nodes': [], 'hash': chunk_hash, 'size_bytes': chunk_size}
                 chunk_map[chunk_name]['nodes'].append(node_ip)
                 
+            # Check every chunk for missing backups
             for chunk_name, data in chunk_map.items():
                 current_nodes = data['nodes']
                 
                 if len(current_nodes) < REPLICATION_FACTOR:
+                    # UNDER-REPLICATED! We need to fix this.
+                    # 1. Find an active node that HAS the chunk
                     source_node = next((n for n in current_nodes if n in active_nodes), None)
+                    
+                    # 2. Find an active node that DOES NOT have the chunk
                     target_node = next((n for n in active_nodes if n not in current_nodes), None)
                     
                     if source_node and target_node:
                         print(f"🔄 [BALANCER] Fixing {chunk_name}: Copying from {source_node[-4:]} to {target_node[-4:]}...")
                         
                         try:
+                            # Fetch from Source
                             source_conn = xmlrpc.client.ServerProxy(f"http://{source_node}")
                             chunk_data = source_conn.get_chunk(chunk_name)
                             
+                            # Push to Target
                             target_conn = xmlrpc.client.ServerProxy(f"http://{target_node}")
                             target_conn.store_chunk(chunk_name, chunk_data)
                             
-                            # ---> UPDATE QUERY 2: Insert the chunk_size for the backup row
-                            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size) VALUES (?, ?, ?, ?, ?)",
-                                           (data['filename'], chunk_name, target_node, data['hash'], data['size_bytes']))
+                            # ---> NEW: Record the exact time the balancer healed the node
+                            heal_time = time.time() 
+                            cursor.execute("INSERT INTO file_chunks (filename, chunk_name, node_ip, chunk_hash, chunk_size, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                                           (data['filename'], chunk_name, target_node, data['hash'], data['size_bytes'], heal_time))
                             conn.commit()
                             print(f"✅ [BALANCER] Successfully replicated {chunk_name} to backup node!")
                         except Exception as e:
@@ -219,6 +251,7 @@ def start_master():
     server.register_function(receive_heartbeat, "receive_heartbeat")
     server.register_function(get_active_nodes, "get_active_nodes")
     server.register_function(delete_file_metadata, "delete_file_metadata")
+    server.register_function(get_storage_timeline, "get_storage_timeline")
     
     print("🧠 Master Node is running on port 5000...")
     print("Waiting for connections from Clients or Data Nodes...")

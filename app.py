@@ -3,6 +3,8 @@ import time
 import os
 import hashlib
 import xmlrpc.client
+import pandas as pd
+import altair as alt
 from client_logic import split_file, stitch_file
 
 # --- INITIALIZE SESSION STATE ---
@@ -50,15 +52,15 @@ def display_node_status():
             health_col1, health_col2 = st.columns(2)
             with health_col1:
                 if "127.0.0.1:5001" in active_nodes:
-                    st.success("### 🟢 Node A : **ACTIVE**")
+                    st.success("### 🟢 Node A (5001): **ACTIVE**")
                 else:
-                    st.error("### 🔴 Node A : **OFFLINE**")
+                    st.error("### 🔴 Node A (5001): **OFFLINE**")
                     
             with health_col2:
                 if "127.0.0.1:5002" in active_nodes:
-                    st.success("### 🟢 Node B : **ACTIVE**")
+                    st.success("### 🟢 Node B (5002): **ACTIVE**")
                 else:
-                    st.error("### 🔴 Node B : **OFFLINE**")
+                    st.error("### 🔴 Node B (5002): **OFFLINE**")
         except Exception:
             st.warning("⚠️ Cannot communicate with Master Node.")
     else:
@@ -97,7 +99,6 @@ def display_analytics():
             
             if node_storage:
                 st.markdown("**Data Distribution Across Nodes (MB)**")
-                import pandas as pd
                 chart_data = pd.DataFrame(
                     list(node_storage.values()), 
                     index=list(node_storage.keys()), 
@@ -106,8 +107,52 @@ def display_analytics():
                 st.bar_chart(chart_data, height=350)
             else:
                 st.info("ℹ️ No data is currently stored in the cluster.")
-        except Exception:
-            st.warning("⚠️ Cannot fetch analytics from Master Node.")
+                
+            st.divider()
+            
+            # ==========================================
+            #      NEW: TIME-SERIES LINE GRAPH
+            # ==========================================
+            timeline_data = master_conn.get_storage_timeline()
+            
+            if timeline_data:
+                st.markdown("### 📈 Storage Growth Over Time")
+                
+                df = pd.DataFrame(timeline_data, columns=["Node", "Size", "Timestamp"])
+                
+                # 1. Clean up Node names and convert byte sizes to MB
+                df['Node'] = df['Node'].apply(lambda x: f"Node {x.split(':')[-1]}") 
+                df['Size (MB)'] = df['Size'] / (1024 * 1024) 
+                
+                # ---> THE FORWARD FILL FIX <---
+                import time as sys_time
+                current_unix_time = sys_time.time()
+                present_rows = []
+                for node in df['Node'].unique():
+                    present_rows.append({"Node": node, "Size (MB)": 0.0, "Timestamp": current_unix_time})
+                
+                # Append these "present moment" anchors to our dataframe
+                df = pd.concat([df, pd.DataFrame(present_rows)], ignore_index=True)
+                
+                # 2. Format the time and calculate the cumulative storage
+                df['Time'] = pd.to_datetime(df['Timestamp'], unit='s') 
+                df = df.sort_values('Time')
+                df['Total Storage (MB)'] = df.groupby('Node')['Size (MB)'].cumsum()
+                
+                # 3. Draw the chart with interpolate='step-after'
+                line_chart = alt.Chart(df).mark_line(point=True, interpolate='step-after').encode(
+                    x=alt.X('Time:T', title='Time of Upload / Replication'),
+                    y=alt.Y('Total Storage (MB):Q', title='Total Storage (MB)'),
+                    color=alt.Color('Node:N', legend=alt.Legend(title="Servers")),
+                    tooltip=['Node', 'Time', 'Total Storage (MB)']
+                ).properties(height=400).interactive()
+                
+                st.altair_chart(line_chart, use_container_width=True)
+            else:
+                st.info("ℹ️ No timeline data is currently available in the cluster.")
+
+        except Exception as e:
+            st.warning(f"⚠️ Cannot fetch analytics from Master Node: {e}")
     else:
         st.info("Please connect to the Master Node to view analytics.")
 
@@ -115,7 +160,6 @@ def display_analytics():
 # ==========================================
 #         MODAL: IMAGE PREVIEW DIALOG
 # ==========================================
-# ---> NEW: This creates a beautiful pop-up that closes if you click outside of it!
 @st.dialog("🖼️ Live Image Preview", width="large")
 def show_preview_dialog(filename, master_ip, master_port):
     try:
@@ -155,7 +199,6 @@ def show_preview_dialog(filename, master_ip, master_port):
                 if not chunk_recovered:
                     raise Exception("Missing or corrupt chunks prevented preview.")
             
-            # Displays the image cleanly inside the modal
             st.image(bytes(file_bytes), use_container_width=True)
             
     except Exception as e:
@@ -166,6 +209,7 @@ def show_preview_dialog(filename, master_ip, master_port):
 #               PAGE ROUTING
 # ==========================================
 
+# NOTE: This section MUST be completely flush with the left side of your screen!
 if app_page == "Main Dashboard":
     st.title("Distributed File System Dashboard")
     display_node_status()
@@ -212,7 +256,7 @@ if app_page == "Main Dashboard":
                                 'chunk_name': chunk['chunk_name'], 
                                 'node_ip': target_node,
                                 'hash': chunk['hash'],
-                                'size_bytes': chunk['size_bytes']
+                                'size_bytes': chunk.get('size_bytes', len(chunk['raw_bytes']))
                             })
                         chunk['assigned_nodes'] = assigned_nodes
                     
@@ -243,7 +287,7 @@ if app_page == "Main Dashboard":
                 live_registry = master_conn.get_file_directory()
                 
                 if live_registry:
-                    with st.container(height=400, border=True):
+                    with st.container(height=500, border=True):
                         for filename, status in live_registry.items():
                             
                             text_col, prev_col, dl_col, del_col = st.columns([3, 1, 1, 1])
@@ -325,7 +369,6 @@ if app_page == "Main Dashboard":
                                         except Exception as e:
                                             st.toast(f"❌ Deletion error: {e}")
                                             
-                            # ---> NEW: Calling the Dialog Box!
                             if preview_clicked:
                                 show_preview_dialog(filename, st.session_state['master_ip'], st.session_state['master_port'])
                             
