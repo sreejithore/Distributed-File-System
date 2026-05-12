@@ -3,8 +3,7 @@ import xmlrpc.client
 import os
 import threading
 import time
-import sys # <-- NEW IMPORT
-import threading
+import sys 
 
 # --- NODE CONFIGURATION ---
 NODE_IP = "127.0.0.1"
@@ -24,83 +23,76 @@ if not os.path.exists(STORAGE_DIR):
 
 # --- CORE STORAGE FUNCTIONS ---
 
-def garbage_collector(master_url, storage_dir):
-    """Periodically asks the Master if local chunks are still valid."""
-    while True:
-        time.sleep(10) # Run cleanup every 30 seconds
-        try:
-            master_conn = xmlrpc.client.ServerProxy(master_url)
-            
-            # Look at every physical file in the storage folder
-            for filename in os.listdir(storage_dir):
-                file_path = os.path.join(storage_dir, filename)
-                
-                # Only check actual files (ignore folders if any)
-                if os.path.isfile(file_path):
-                    # Ask the Master if this chunk is still registered
-                    is_valid = master_conn.verify_chunk_exists(filename)
-                    
-                    if not is_valid:
-                        # The Master has no memory of this chunk. It is an orphan!
-                        print(f"🧹 [GARBAGE COLLECTOR] Deleting orphaned chunk: {filename}")
-                        os.remove(file_path)
-                        
-        except Exception as e:
-            # If the Master is offline, don't delete anything, just wait.
-            pass
-        
 def store_chunk(chunk_name, chunk_data):
-    """Receives a binary chunk from the Client and saves it to disk."""
+    """Saves a binary chunk to the local hard drive."""
     try:
-        # chunk_data arrives as an xmlrpc.client.Binary object, so we extract the raw bytes with .data
         file_path = os.path.join(STORAGE_DIR, chunk_name)
-        with open(file_path, 'wb') as f:
+        with open(file_path, "wb") as f:
             f.write(chunk_data.data)
-        print(f"[SUCCESS] Stored chunk: {chunk_name}")
+        print(f"[STORE] Saved chunk: {chunk_name}")
         return True
     except Exception as e:
-        print(f"[ERROR] Failed to store chunk: {e}")
+        print(f"[ERROR] Failed to save {chunk_name}: {e}")
         return False
 
 def get_chunk(chunk_name):
-    """Reads a chunk from disk and sends it back to the Client."""
+    """Reads a binary chunk from the local hard drive and sends it over the network."""
     try:
         file_path = os.path.join(STORAGE_DIR, chunk_name)
-        with open(file_path, 'rb') as f:
-            raw_bytes = f.read()
-            # Wrap the bytes in an XML-RPC Binary object for safe network transit
-            return xmlrpc.client.Binary(raw_bytes)
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                return xmlrpc.client.Binary(f.read())
+        else:
+            raise FileNotFoundError(f"Chunk {chunk_name} not found on this node.")
     except Exception as e:
-        print(f"[ERROR] Failed to read chunk: {e}")
-        return None
+        print(f"[ERROR] Failed to retrieve {chunk_name}: {e}")
+        raise
 
 def delete_chunk(chunk_name):
-    """Physically deletes a chunk from the node's hard drive."""
-    file_path = os.path.join(STORAGE_DIR, chunk_name)
-    if os.path.exists(file_path):
-        try:
+    """Deletes a physical chunk from the local hard drive."""
+    try:
+        file_path = os.path.join(STORAGE_DIR, chunk_name)
+        if os.path.exists(file_path):
             os.remove(file_path)
-            print(f"🗑️ [DELETED] {chunk_name} physically removed from disk.")
+            print(f"[DELETE] Removed chunk: {chunk_name}")
             return True
-        except Exception as e:
-            print(f"⚠️ [ERROR] Could not delete {chunk_name}: {e}")
-            return False
-    return True # If the file is already gone, we consider it a success
+        return False
+    except Exception as e:
+        print(f"[ERROR] Failed to delete {chunk_name}: {e}")
+        return False
 
-# --- HEARTBEAT MECHANISM ---
-'''
-def send_heartbeat():
-    """Runs in the background and pings the Master every 2 seconds."""
+# --- BACKGROUND THREADS ---
+
+def garbage_collector():
+    """Periodically asks the Master if local chunks are still valid."""
     while True:
+        time.sleep(15) # Check the system every 15 seconds
         try:
-            master = xmlrpc.client.ServerProxy(MASTER_URL)
-            # We will add this function to the Master Node in the next step!
-            master.receive_heartbeat(f"{NODE_IP}:{NODE_PORT}")
-        except Exception:
-            # If the Master is offline, silently fail and try again in 2 seconds
+            master_conn = xmlrpc.client.ServerProxy(MASTER_URL)
+            
+            if not os.path.exists(STORAGE_DIR):
+                continue
+                
+            # Look at every physical file in the storage folder
+            local_chunks = os.listdir(STORAGE_DIR)
+            
+            for chunk_name in local_chunks:
+                file_path = os.path.join(STORAGE_DIR, chunk_name)
+                
+                # Only check actual files (ignore system folders if any)
+                if os.path.isfile(file_path):
+                    # Ask the Master if this chunk is still registered in the SQLite DB
+                    is_valid = master_conn.verify_chunk_exists(chunk_name)
+                    
+                    if not is_valid:
+                        os.remove(file_path)
+                        print(f"🗑️ [GARBAGE COLLECTOR] Purged orphaned chunk: {chunk_name}")
+                        
+        except ConnectionRefusedError:
+            # If Master is offline, do nothing. We don't want to accidentally delete data!
             pass
-        time.sleep(2)
-'''
+        except Exception as e:
+            pass
 
 def send_heartbeat():
     """Runs in the background and pings the Master every 2 seconds."""
@@ -109,7 +101,6 @@ def send_heartbeat():
             master = xmlrpc.client.ServerProxy(MASTER_URL)
             master.receive_heartbeat(f"{NODE_IP}:{NODE_PORT}")
         except Exception as e:
-            # ---> CHANGED: Force it to print the error instead of 'pass' <---
             print(f"⚠️ [ERROR] Heartbeat failed to reach Master: {e}") 
         time.sleep(2)
 
@@ -120,7 +111,11 @@ def start_data_node():
     heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
     heartbeat_thread.start()
     
-    # 2. Start the RPC server to listen for file transfers
+    # 2. ---> THE FIX: We must actually start the Garbage Collector thread! <---
+    gc_thread = threading.Thread(target=garbage_collector, daemon=True)
+    gc_thread.start()
+    
+    # 3. Start the RPC server to listen for incoming file transfers
     server_address = ('0.0.0.0', NODE_PORT)
     server = xmlrpc.server.SimpleXMLRPCServer(server_address, allow_none=True)
     
@@ -130,12 +125,12 @@ def start_data_node():
     
     print(f"💾 Data Node is running on port {NODE_PORT}...")
     print(f"Saving files to: {STORAGE_DIR}")
+    print(f"🧹 Garbage Collector is ACTIVE.")
     
     try:
         server.serve_forever()
-        threading.Thread(target=garbage_collector, args=("http://127.0.0.1:5000", storage_directory), daemon=True).start()
     except KeyboardInterrupt:
-        print("\nData Node shutting down.")
+        print("\nShutting down Data Node.")
 
 if __name__ == "__main__":
     start_data_node()
